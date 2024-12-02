@@ -1,6 +1,6 @@
 
 
-const name = "student";
+const name = "team joe and devin";
 const game = "auto-" + name + "-" + randomInt(1000);
 
 const alphabet = new Set("abcdefghijklmnopqrstuvwxyz".split(''));
@@ -39,12 +39,23 @@ function patMatch(pat, word, guesses) {
     }
 
     if (pchs[ii] != wchs[ii]) {
-      // TODO: consider guesses
+      // const vowels = "aeiou".split('');
+      // if (!vowels.includes(pchs[ii]))
+      //  return true;
+      if (!guesses.has(pchs[ii]))
+        return true;
       return false;
     }
   }
 
   return true;
+}
+
+function mode(arr){
+  return arr.sort((a,b) =>
+        arr.filter(v => v===a).length
+      - arr.filter(v => v===b).length
+  ).pop();
 }
 
 function onView(view) {
@@ -56,17 +67,32 @@ function onView(view) {
   console.log("guesses:", Array.from(guesses));
   console.log("moves:", moves);
 
+  let all = "";
+
   let pats = puzzle.split(" ");
-  for (let pat of pats) {
-    for (let word of words) {
+  for (let pat of pats) { // current known letters in every word
+    for (let word of words) { // every word in word list
       if (patMatch(pat, word, guesses)) {
         console.log(`pat [${pat}] could be [${word}]`);
+        all += word;
         break;
       }
     }
   }
+  
+  const vowels = "aeiou".split('');
+  
+  let sortedAll = [];
+  
+  for (let letter of all) {
+    if (!guesses.has(letter) && !vowels.includes(letter))
+      sortedAll.push(letter);
+  }
 
   let ch = randomPick(moves);
+  if (sortedAll.length !== 0)
+    ch = mode(sortedAll);
+
   console.log("guess:", ch);
 
   if (moves.length > 0 && puzzle.includes('-')) {
