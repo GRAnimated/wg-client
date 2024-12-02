@@ -1,6 +1,6 @@
 
 
-const name = "team joe and devin";
+const name = "team joe and devin 2";
 const game = "auto-" + name + "-" + randomInt(1000);
 
 const alphabet = new Set("abcdefghijklmnopqrstuvwxyz".split(''));
