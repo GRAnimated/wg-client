@@ -1,6 +1,7 @@
+const PVP_MATCH = false;
 const LOG_DEBUG_INFO = false;
-const MAX_ACTIVE_GAMES = 1;
-const PLAYER_WIN_THRESHOLD = 20;
+const MAX_ACTIVE_GAMES = 3;
+const PLAYER_WIN_THRESHOLD = 0;
 
 const NAME_MAIN = `test1`;
 const NAME_SLEEPER = "test40";
@@ -14,9 +15,8 @@ const clc = require("cli-color");
 const url = "wss://words.homework.quest/socket";
 const alphabet = new Set("abcdefghijklmnopqrstuvwxyz".split(''));
 const vowels = new Set("aeiou".split(''));
-// const sleeperPattern = new Set("eiaouqjzxkwvfybhmpgcdltrns".split(''));
-const sleeperPattern = new Set("eiaoutnrshdlfcmgypwbvkjxzq".split(''));
-const enemyPattern = Array.from("tnrshdlfcmgypwbvkjxzqeaoiu".split(''));
+const sleeperPattern = new Set("eiaouqjzxkwvfybhmpgcdltrns".split(''));
+const enemyPattern = Array.from("tnrshdlfcmgypwbvkjxzqeaoiu");
 
 const letter_frequency_table = { // calculated for words.txt
   'a': 7.716, 'b': 1.731, 'c': 4.225, 'd': 4.263, 'e': 11.813,
@@ -45,12 +45,11 @@ class SocketState {
     this.socketSleeper = null;
     this.channelMain = null;
     this.channelSleeper = null;
-    this.processedViews = new Set();
 
     this.childConnected = false;
     this.mainConnected = false;
+    this.readyToGuess = false;
 
-    this.lastPlayersLength = 0;
     this.gameFinished = false;
   }
 };
@@ -61,12 +60,6 @@ function sortLettersByFrequency(letters) {
     const countB = letter_frequency_table[b];
 
     return countB - countA;
-  });
-}
-
-function sortLettersByEnemyPriority(letters) {
-  return letters.sort((a, b) => {
-    return enemyPattern.indexOf(a) - enemyPattern.indexOf(b);
   });
 }
 
@@ -107,7 +100,7 @@ function cleanUpLetters(letters, possibleMoves) {
     if (!vowels.has(letter) && possibleMoves.includes(letter))
       newLetters.push(letter);
   }
-  newLetters = sortLettersByEnemyPriority(newLetters);
+  newLetters = sortLettersByFrequency(newLetters);
   return newLetters;
 }
 
@@ -200,28 +193,21 @@ function checkMainPlayerForEarlyFinish(possibleMoves, players) {
   return false;
 }
 
-function calculateEnemyPoints(view) {
-  const guesses = new Set(view.guesses);
-  const possibleMoves = removeVowels(Array.from(alphabet.difference(guesses)).join(''));
-
-  console.log(possibleMoves.length);
-}
-
 function logTurnInfo(view, clientName, possibleMoves) {
   if (!LOG_DEBUG_INFO)
     return;
 
+  let mainPlayer = view.players.find(player => player.name === NAME_MAIN);
+  let otherPlayer = view.players.find(player => player.name === NAME_SLEEPER);
+
   const puzzle = view.puzzle;
   const guesses = new Set(view.guesses);
 
-  const playerNames = view.players.map(player => player.name);
-  const playerScores = view.players.map(player => player.score);
-
-  log(clientName, 'debug', `Puzzle: `, Array.from(puzzle).join(''));
-  log(clientName, 'debug', `Guesses:`, Array.from(guesses).join(''));
-  log(clientName, 'debug', `Possible Moves:`, possibleMoves.join(''));
-  // log(clientName, 'debug', (playerNames.join(' vs. ') + ':'));
-  log(clientName, 'debug', (playerScores.join(' to ') + ' points\n'));
+  log(clientName, '', `Puzzle: `, Array.from(puzzle).join(''));
+  log(clientName, '', `Guesses:`, Array.from(guesses).join(''));
+  log(clientName, '', `Possible Moves:`, possibleMoves.join(''));
+  if (mainPlayer && otherPlayer)
+    log(clientName, '', `Points:`, mainPlayer.score, 'to', otherPlayer.score);
 }
 
 function log(name, type, ...msg) {
@@ -243,89 +229,59 @@ function log(name, type, ...msg) {
 }
 
 async function initChannels() {
-  const game = `auto-${1 + Math.floor(10000000 * Math.random())}`;
+  let game = (PVP_MATCH ? "pvp_" : "") + "auto-" + 1 + Math.floor(10000000 * Math.random());;
 
   let state = new SocketState();
 
-  state.socketSleeper = new Socket(url);
-  state.channelSleeper = state.socketSleeper.channel(`game:${game}`, { name: NAME_SLEEPER });
+  state.socketSleeper = new Socket(url, { debug: true });
+  state.socketSleeper.connect();
 
-  state.socketMain = new Socket(url);
-  state.channelMain = state.socketMain.channel(`game:${game}`, { name: NAME_MAIN });
+  state.socketMain = new Socket(url, { debug: true });
+  state.socketMain.connect();
+
+  state.channelSleeper = state.socketSleeper.channel("game:" + game, { name: NAME_SLEEPER });
+  state.channelMain = state.socketMain.channel("game:" + game, { name: NAME_MAIN });
 
   return state;
 }
 
-async function joinChannel(channel, name) {
-  return new Promise((resolve, reject) => {
-    channel.join()
-      .receive("ok", (msg) => {
-        log(name, 'debug', `Connected to game: ${msg.game}`);
-        resolve();
-      })
-      .receive("error", (err) => {
-        console.error(`Failed to join channel (${name}):`, err);
-        reject(err);
-      });
-  });
+async function joinMainChannel(state, channelMain) {
+  try {
+    channelMain.join().receive("ok", (msg) => {
+      log(NAME_MAIN, 'debug', `Connected to game: ${msg.game}`);
+
+      state.mainConnected = true;
+      checkReadyToGuess(state);
+    })
+  } catch (e) {
+    console.log(`[Main] Error: ${e}`);
+  }
 }
 
-function handleView(state) {
-  return (view) => {
-    const viewId = JSON.stringify(view);
-    // sometimes, a view will come in that just indicates a player joined and we want to process it twice
-    if (view.players.length > state.lastPlayersLength) {
-      onView(state, view);
-      state.lastPlayersLength = view.players.length;
-      return;
-    }
-    if (!state.processedViews.has(viewId)) {
-      state.processedViews.add(viewId);
-      onView(state, view);
-    }
-  };
-}
+async function joinSleeperChannel() {
+  let state = await initChannels();
 
-async function joinChannels() {
-  const state = await initChannels();
-
-  state.channelSleeper.on("view", handleView(state));
-  state.channelMain.on("view", handleView(state));
+  state.channelMain.on("view", (view) => onMainView(state, view));
+  state.channelSleeper.on("view", (view) => onSleeperView(state, view));
 
   try {
-    state.socketSleeper.connect();
-    await joinChannel(state.channelSleeper, NAME_SLEEPER);
-    state.childConnected = true;
+    state.channelSleeper.join().receive("ok", (msg) => {
+      log(NAME_SLEEPER, 'debug', `Connected to game: ${msg.game}`);
 
-    state.socketMain.connect();
-    await joinChannel(state.channelMain, NAME_MAIN);
-    state.mainConnected = true;
-
-  } catch (error) {
-    console.error("Error joining channels:", error);
+      state.childConnected = true;
+      joinMainChannel(state, state.channelMain);
+    })
+  } catch (e) {
+    console.log(`[Sleeper] Error: ${e}`);
   }
 
   return state;
 }
 
-async function onView(state, view) {
-  if (!isReadyToGuess(state))
-    return;
-  // console.log(view.active + `'s turn`);
-  // calculateEnemyPoints(view);
-  // console.log(isReadyToGuess(state));
-  if (view.active === NAME_MAIN)
-    onMainView(state, view);
-  else if (view.active === NAME_SLEEPER)
-    onSleeperView(state, view);
-  else if (view.active === 'Eggman') // if eggman finishes
-    finishedGame(state, view);
-}
-
 async function onSleeperView(state, view) {
   sleeperView = view;
 
-  if (!isReadyToGuess(state)) {
+  if (!state.readyToGuess) {
     log(NAME_SLEEPER, 'debug', `Waiting for main client to connect...`);
     // return;
   }
@@ -366,7 +322,7 @@ async function onSleeperView(state, view) {
 async function onMainView(state, view) {
   mainView = view;
 
-  if (!isReadyToGuess(state)) {
+  if (!state.readyToGuess) {
     log(NAME_MAIN, 'debug', "Waiting for sleeper client to connect...");
     return;
   }
@@ -393,7 +349,7 @@ async function onMainView(state, view) {
   log(NAME_MAIN, 'debug', `Predict: ${allCandidates.join(' ')}`);
   logTurnInfo(view, NAME_MAIN, possibleMoves);
 
-  let chs = removeVowels(sortLettersByEnemyPriority(possibleMoves).join('')); // remove vowels because the sleeper agent always takes care of them
+  let chs = removeVowels(sortLettersByFrequency(possibleMoves).join('')); // remove vowels because the sleeper agent always takes care of them
 
   if (chs.length === 0)
     chs = possibleMoves; // fallback that probably doesn't matter
@@ -439,7 +395,7 @@ function finishedGame(state, view) {
   if (state.finished) // both players get a finished view so we only the first one
     return;
 
-  console.log(clc.green(`\n[Finished] Game: ${view.game}`));
+  console.log(clc.green(`[Finished] Game: ${view.game}`));
   console.log(clc.green(`Puzzle: ${view.puzzle}`));
 
   const playerNames = view.players.map(player => player.name);
@@ -452,12 +408,11 @@ function finishedGame(state, view) {
   startNewGames();
 }
 
-function isReadyToGuess(state) {
+function checkReadyToGuess(state) {
   if (state.childConnected && state.mainConnected) {
     // console.log("Both clients are connected");
-    return true;
+    state.readyToGuess = true;
   }
-  return false;
 }
 
 let activeGames = [];
@@ -467,7 +422,7 @@ async function startNewGames() {
 
   if (activeGames.length < MAX_ACTIVE_GAMES) {
 
-    let state = await joinChannels();
+    let state = await joinSleeperChannel();
     activeGames.push(state);
 
   }

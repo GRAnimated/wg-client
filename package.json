@@ -1,5 +1,7 @@
 {
   "dependencies": {
+    "cli-color": "^2.0.4",
+    "cli-colors": "^0.0.2",
     "core-js": "^3.39.0",
     "phoenix-channels": "^1.0.0"
   }
